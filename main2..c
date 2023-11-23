@@ -4,7 +4,7 @@
 #include <string.h>
 #include <time.h>
 
-// Debugging-Macro
+
 #define CALLNEW(call) \
 do { \
     int ret = call; \
@@ -67,16 +67,15 @@ void *time_meassure(void *arg) {
 }
 
 int main() {
-    // Create a pthread for the main functionality
     pthread_t main_thread;
     CALLNEW(pthread_create(&main_thread, NULL, time_meassure, NULL));
 
-    // Set the priority of the main thread to the highest value
+
     struct sched_param main_param;
     main_param.sched_priority = sched_get_priority_max(SCHED_FIFO);
     CALLNEW(pthread_setschedparam(pthread_self(), SCHED_FIFO, &main_param));
 
-    // Wait for the main thread to finish
+
     CALLNEW(pthread_join(main_thread, NULL));
 
     return 0;
