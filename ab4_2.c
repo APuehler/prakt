@@ -12,10 +12,10 @@
 #define CYCLE_TIME_MS 4
 #define PROCESS_TIME_TASK1_MS 2
 #define PROCESS_TIME_TASK2_MS 3
-#define MAX_TASK1_TIME_MS 3
-#define MAX_TASK2_TIME_MS (2 * PROCESS_TIME_TASK2_MS)
+#define WATCHDOG_TIME_TASK1_MS 3 // New watchdog time for Task 1
+#define WATCHDOG_TIME_TASK2_MS 6 // New watchdog time for Task 2 (2 x PROCESS_TIME_TASK2_MS)
 
-// Macro for syscall debugging
+// Macro for system call debugging
 #define CALLNEW(call) \
 do { \
     int ret = call; \
@@ -25,115 +25,105 @@ do { \
     } \
 } while(0);
 
-// Signal handler for cyclic timer
-void timer_handler(int sig);
-
-// Watchdog timer setup
-void setup_watchdog(timer_t *timer_id, int ms);
-
-// Task functions
+// Function prototypes
 void *task1(void *arg);
 void *task2(void *arg);
 void waste_msecs(unsigned int msecs);
+void timer_handler(int sig, siginfo_t *si, void *uc);
+void setup_timer(timer_t *timer_id, long long ns, void (*handler)(int, siginfo_t *, void *));
 
-// Semaphores and timers
+// Global variables
 sem_t sem_task1;
-timer_t watchdog_task1, watchdog_task2;
+timer_t timer_task1; // Cyclic timer for Task 1
+timer_t watchdog_task1, watchdog_task2; // Watchdog timers
 
 int main() {
-    // Initialize attributes and set priorities
     pthread_attr_t attr;
     CALLNEW(pthread_attr_init(&attr));
     CALLNEW(pthread_attr_setinheritsched(&attr, PTHREAD_EXPLICIT_SCHED));
     struct sched_param param;
-    param.sched_priority = sched_get_priority_max(SCHED_FIFO);
+    CALLNEW(pthread_attr_getschedparam(&attr, &param));
+    param.sched_priority = 100;
     CALLNEW(pthread_attr_setschedparam(&attr, &param));
 
-    // Print main thread priority
-    int policy;
-    CALLNEW(pthread_attr_getschedpolicy(&attr, &policy));
-    CALLNEW(pthread_attr_getschedparam(&attr, &param));
-    printf("Main thread priority: %d (Scheduling Policy: %s)\n", param.sched_priority,
-           (policy == SCHED_FIFO) ? "SCHED_FIFO" : "SCHED_OTHER");
-
-    // Initialize semaphores and timers
-    CALLNEW(sem_init(&sem_task1, 0, 0));
-    setup_watchdog(&watchdog_task1, MAX_TASK1_TIME_MS);
-    setup_watchdog(&watchdog_task2, MAX_TASK2_TIME_MS);
-
-    // Create tasks
     pthread_t t1, t2;
+
+    CALLNEW(sem_init(&sem_task1, 0, 0));
+
+    // Setup cyclic timer for Task 1
+    setup_timer(&timer_task1, CYCLE_TIME_MS * 1000000, timer_handler);
+
     CALLNEW(pthread_create(&t1, &attr, task1, NULL));
+
+    param.sched_priority = 99;
+    CALLNEW(pthread_attr_setschedparam(&attr, &param));
+
     CALLNEW(pthread_create(&t2, &attr, task2, NULL));
 
-    // Wait for tasks to finish
     CALLNEW(pthread_join(t1, NULL));
     CALLNEW(pthread_join(t2, NULL));
 
-    // Cleanup
     CALLNEW(sem_destroy(&sem_task1));
-    CALLNEW(timer_delete(watchdog_task1));
-    CALLNEW(timer_delete(watchdog_task2));
 
-    printf("exiting\n");
+    // Cleanup timers
+    timer_delete(timer_task1);
+    timer_delete(watchdog_task1);
+    timer_delete(watchdog_task2);
+
     return EXIT_SUCCESS;
 }
 
-void timer_handler(int sig) {
-    // Post semaphore on signal
-    CALLNEW(sem_post(&sem_task1));
+void timer_handler(int sig, siginfo_t *si, void *uc) {
+    // Signal handler for the cyclic timer
+    CALLNEW(sem_post(&sem_task1)); // Release the semaphore for Task 1
 }
 
-void setup_watchdog(timer_t *timer_id, int ms) {
-    // Create and start a one-shot timer for watchdog
+void setup_timer(timer_t *timer_id, long long ns, void (*handler)(int, siginfo_t *, void *)) {
     struct sigevent sev;
     struct itimerspec its;
+    struct sigaction sa;
 
+    // Setup signal handler
+    sa.sa_flags = SA_SIGINFO;
+    sa.sa_sigaction = handler;
+    sigemptyset(&sa.sa_mask);
+    CALLNEW(sigaction(SIGRTMIN, &sa, NULL));
+
+    // Create the timer
     sev.sigev_notify = SIGEV_SIGNAL;
     sev.sigev_signo = SIGRTMIN;
+    sev.sigev_value.sival_ptr = timer_id;
     CALLNEW(timer_create(CLOCK_MONOTONIC, &sev, timer_id));
 
-    its.it_value.tv_sec = ms / 1000;
-    its.it_value.tv_nsec = (ms % 1000) * 1000000;
-    its.it_interval.tv_sec = 0;  // One-shot timer
-    its.it_interval.tv_nsec = 0;
+    // Start the timer
+    its.it_value.tv_sec = ns / NS_PER_SECOND;
+    its.it_value.tv_nsec = ns % NS_PER_SECOND;
+    its.it_interval.tv_sec = its.it_value.tv_sec; // For cyclic behavior
+    its.it_interval.tv_nsec = its.it_value.tv_nsec;
     CALLNEW(timer_settime(*timer_id, 0, &its, NULL));
 }
 
 void *task1(void *arg) {
-    printf("task 1\n");
-    // Create cyclic timer for Task 1
-    timer_t cyclic_timer;
-    struct sigevent sev;
-    struct itimerspec its;
-
-    sev.sigev_notify = SIGEV_SIGNAL;
-    sev.sigev_signo = SIGRTMIN;
-    CALLNEW(timer_create(CLOCK_MONOTONIC, &sev, &cyclic_timer));
-
-    // Set timer to trigger every 4ms
-    its.it_value.tv_sec = CYCLE_TIME_MS / 1000;
-    its.it_value.tv_nsec = (CYCLE_TIME_MS % 1000) * 1000000;
-    its.it_interval.tv_sec = its.it_value.tv_sec;
-    its.it_interval.tv_nsec = its.it_value.tv_nsec;
-    CALLNEW(timer_settime(cyclic_timer, 0, &its, NULL));
+    // Setup watchdog timer for Task 1
+    setup_timer(&watchdog_task1, WATCHDOG_TIME_TASK1_MS * 1000000, NULL);
 
     while (1) {
-        printf("task 1 working\n");
+        CALLNEW(sem_wait(&sem_task1)); // Wait for semaphore set by cyclic timer
         waste_msecs(PROCESS_TIME_TASK1_MS);
-        CALLNEW(sem_wait(&sem_task1)); // Wait for semaphore signal
-        CALLNEW(timer_settime(watchdog_task1, 0, &its, NULL)); // Reset watchdog
+        // Reset watchdog timer
+        setup_timer(&watchdog_task1, WATCHDOG_TIME_TASK1_MS * 1000000, NULL);
     }
 }
 
 void *task2(void *arg) {
-    printf("task 2\n");
+    // Setup watchdog timer for Task 2
+    setup_timer(&watchdog_task2, WATCHDOG_TIME_TASK2_MS * 1000000, NULL);
+
     while (1) {
-        printf("task 2 waiting sem\n");
         CALLNEW(sem_wait(&sem_task1));
-        printf("task 2 working sem\n");
         waste_msecs(PROCESS_TIME_TASK2_MS);
-        CALLNEW(timer_settime(watchdog_task2, 0, &its, NULL)); // Reset watchdog
+        // Reset watchdog timer
+        setup_timer(&watchdog_task2, WATCHDOG_TIME_TASK2_MS * 1000000, NULL);
     }
 }
 
