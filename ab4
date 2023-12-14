@@ -38,15 +38,16 @@ int main() {
     CALLNEW(pthread_attr_init(&attr));
     CALLNEW(pthread_attr_setinheritsched(&attr, PTHREAD_EXPLICIT_SCHED));
     struct sched_param param;
-    param.sched_priority = sched_get_priority_max(SCHED_FIFO);
+    CALLNEW(pthread_attr_getschedparam(&attr, &param));
+    param.sched_priority = 100;
     CALLNEW(pthread_attr_setschedparam(&attr, &param));
+
 
     //
     int policy;
     CALLNEW(pthread_attr_getschedpolicy(&attr, &policy));
     CALLNEW(pthread_attr_getschedparam(&attr, &param));
-    printf("Main thread priority: %d (Scheduling Policy: %s)\n", param.sched_priority,
-           (policy == SCHED_FIFO) ? "SCHED_FIFO" : "SCHED_OTHER");
+    //printf("Main thread priority: %d (Scheduling Policy: %s)\n", param.sched_priority, (policy == SCHED_FIFO) ? "SCHED_FIFO" : "SCHED_OTHER");
 
 
     pthread_t t1, t2;
@@ -54,6 +55,10 @@ int main() {
     CALLNEW(sem_init(&sem_task1, 0, 0));
 
     CALLNEW(pthread_create(&t1, &attr, task1, NULL));
+
+    param.sched_priority = 99;
+    CALLNEW(pthread_attr_setschedparam(&attr, &param));
+
     CALLNEW(pthread_create(&t2, &attr, task2, NULL));
 
     CALLNEW(pthread_join(t1, NULL));
@@ -62,7 +67,7 @@ int main() {
     CALLNEW(sem_destroy(&sem_task1));
 
     //debug
-    printf("exiting\n");
+    //printf("exiting\n");
     return EXIT_SUCCESS;
 }
 
@@ -71,44 +76,47 @@ int main() {
 
 void *task1(void *arg) {
     //debug
-    printf("task 1\n");
-	struct timespec current_time, wakeup_time, start_time;
+    //printf("task 1\n");
+	struct timespec wakeup_time;
 
-	clock_gettime(CLOCK_MONOTONIC, &current_time);
+	clock_gettime(CLOCK_MONOTONIC, &wakeup_time);
 	int count = 0;
 	while (1) {
 	    //debug
-	    printf("task 1 working\n");
+	    //printf("task 1 working\n");
 		waste_msecs(PROCESS_TIME_TASK1_MS);
         if (++count % 3 == 0) {
     	    //debug
-    	    printf("task 1 setting sem\n");
+    	    //printf("task 1 setting sem\n");
             CALLNEW(sem_post(&sem_task1));
             count = 0;
         }
-        int countup = CYCLE_TIME_MS;
-		while (countup--) {
-			wakeup_time.tv_sec = current_time.tv_sec + (current_time.tv_nsec + 1000000) / NS_PER_SECOND;
-			wakeup_time.tv_nsec = (current_time.tv_nsec + 1000000) % NS_PER_SECOND;
-			current_time = wakeup_time;
+
+
+        wakeup_time.tv_nsec += CYCLE_TIME_MS *1000000;
+        if(wakeup_time.tv_nsec >= 1000000000) {
+        	wakeup_time.tv_nsec -= 1000000000;
+        	wakeup_time.tv_sec += 1;
+        }
+
 			clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &wakeup_time, NULL);
 
 
 
-		}
+
 	}
 
 }
 
 void *task2(void *arg) {
 	//debug
-	printf("task 2\n");
+	//printf("task 2\n");
     while (1) {
 	    //debug
-	    printf("task 2 waiting sem\n");
+	    //printf("task 2 waiting sem\n");
         CALLNEW(sem_wait(&sem_task1));
 	    //debug
-	    printf("task 2 working sem\n");
+	    //printf("task 2 working sem\n");
         waste_msecs(PROCESS_TIME_TASK2_MS);
     }
 }
